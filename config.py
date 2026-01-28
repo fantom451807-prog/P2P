@@ -8,10 +8,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Bot Credentials
-BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
-OWNER_ID = 0000000  # Your Telegram user ID
-API_ID = "YOUR_API_ID"
-API_HASH = "YOUR_API_HASH"
+BOT_TOKEN = "8061314331:AAGCqelMJKV04csyv0Q7C-wVYC30NeLT4y0"
+OWNER_ID = 6290766183  # Your Telegram user ID
+API_ID = "384128ba89c089c700ab54cb6ef141f6"
+API_HASH = "32535292"
 
 # Blockchain Configuration (from .env)
 ADMIN_WALLET_ADDRESS = os.getenv("ADMIN_WALLET_ADDRESS")
