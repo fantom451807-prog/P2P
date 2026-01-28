@@ -2,22 +2,42 @@
 Blockchain Monitor - Direct Web3 Reading (NO API NEEDED)
 Reads directly from BSC blockchain for instant, unlimited transaction detection
 """
+
 import asyncio
 import logging
 from datetime import datetime
 from web3 import Web3
 from web3.exceptions import BlockNotFound
+from telegram import Bot
+
 from config import (
     ADMIN_WALLET_ADDRESS,
     BSC_RPC_URL,
     TOKEN_CONTRACTS,
     CONFIRMATION_BLOCKS,
-    POLLING_INTERVAL
+    POLLING_INTERVAL,
+    TELEGRAM_BOT_TOKEN,
+    GROUP_CHAT_ID
 )
 
 logger = logging.getLogger(__name__)
 
-# USDT/USDC Token ABI (only Transfer event needed)
+# =========================
+# Telegram Bot
+# =========================
+telegram_bot = Bot(token=TELEGRAM_BOT_TOKEN)
+
+async def send_group_notification(message: str):
+    await telegram_bot.send_message(
+        chat_id=GROUP_CHAT_ID,
+        text=message,
+        parse_mode="HTML",
+        disable_web_page_preview=True
+    )
+
+# =========================
+# Token ABI
+# =========================
 TOKEN_ABI = [
     {
         "anonymous": False,
@@ -45,196 +65,161 @@ TOKEN_ABI = [
     }
 ]
 
-
 class BlockchainMonitorWeb3:
     """
     Direct blockchain reading - NO API needed!
     Reads Transfer events directly from BSC blockchain
     """
-    
+
     def __init__(self):
         self.w3 = Web3(Web3.HTTPProvider(BSC_RPC_URL))
-        self.monitored_deals = {}  # deal_id: deal_info
-        self.processed_txs = set()  # Track processed transaction hashes
+        self.monitored_deals = {}
+        self.processed_txs = set()
         self.last_checked_block = None
-        
-        # Verify connection
+
         if not self.w3.is_connected():
             raise Exception("Cannot connect to BSC network")
-        
+
         logger.info(f"Connected to BSC - Block: {self.w3.eth.block_number}")
-        
+
     def start_monitoring(self, deal_id, deal_info):
-        """Start monitoring for a specific deal"""
         self.monitored_deals[deal_id] = deal_info
-        
-        # Set starting block if not set
+
         if self.last_checked_block is None:
-            self.last_checked_block = self.w3.eth.block_number - 100  # Check last 100 blocks
-        
+            self.last_checked_block = self.w3.eth.block_number - 100
+
         logger.info(f"Started monitoring for deal {deal_id}")
-        
+
     def stop_monitoring(self, deal_id):
-        """Stop monitoring a deal"""
         if deal_id in self.monitored_deals:
             del self.monitored_deals[deal_id]
             logger.info(f"Stopped monitoring for deal {deal_id}")
-    
+
     async def check_transactions(self):
-        """
-        Check for new transactions by reading blockchain directly
-        NO API NEEDED - reads Transfer events from blockchain
-        """
         if not self.monitored_deals:
-            logger.info("No deals being monitored")
             return []
-        
+
         detected_payments = []
         current_block = self.w3.eth.block_number
-        
-        # If first run, start from recent blocks
+
         if self.last_checked_block is None:
             self.last_checked_block = current_block - 100
-            logger.info(f"First run - starting from block {self.last_checked_block}")
-        
-        # Check new blocks since last check
+
         from_block = self.last_checked_block + 1
         to_block = current_block
-        
+
         if from_block > to_block:
-            logger.info("No new blocks to check")
-            return []  # No new blocks
-        
-        logger.info(f"Checking blocks {from_block} to {to_block} for {len(self.monitored_deals)} deals")
-        
+            return []
+
         for deal_id, deal_info in list(self.monitored_deals.items()):
             try:
-                # Get token contract
                 token_address = TOKEN_CONTRACTS.get(deal_info['crypto'])
                 if not token_address:
-                    logger.warning(f"No token contract for {deal_info['crypto']}")
                     continue
-                
-                logger.info(f"Checking {deal_info['crypto']} transfers for deal {deal_id}")
-                logger.info(f"  Token: {token_address}")
-                logger.info(f"  Admin: {ADMIN_WALLET_ADDRESS}")
-                logger.info(f"  Expected from: {deal_info['seller_address']}")
-                logger.info(f"  Expected amount: {deal_info['amount']}")
-                
-                # Create contract instance
+
                 contract = self.w3.eth.contract(
                     address=Web3.to_checksum_address(token_address),
                     abi=TOKEN_ABI
                 )
-                
-                # Get Transfer events TO admin wallet
-                try:
-                    transfer_filter = contract.events.Transfer.create_filter(
-                        fromBlock=from_block,
-                        toBlock=to_block,
-                        argument_filters={'to': Web3.to_checksum_address(ADMIN_WALLET_ADDRESS)}
-                    )
-                    
-                    events = transfer_filter.get_all_entries()
-                    logger.info(f"  Found {len(events)} Transfer events to admin wallet")
-                    
-                    for event in events:
-                        tx_hash = event['transactionHash'].hex()
-                        
-                        # Skip if already processed
-                        if tx_hash in self.processed_txs:
-                            continue
-                        
-                        # Get transaction details
-                        tx_receipt = self.w3.eth.get_transaction_receipt(tx_hash)
-                        tx = self.w3.eth.get_transaction(tx_hash)
-                        
-                        # Extract transfer details
-                        from_address = event['args']['from']
-                        to_address = event['args']['to']
-                        value = event['args']['value']
-                        
-                        # Get token decimals
-                        decimals = contract.functions.decimals().call()
-                        amount = value / (10 ** decimals)
-                        
-                        # Get token symbol
-                        symbol = contract.functions.symbol().call()
-                        
-                        # Verify transaction matches deal
-                        if self._verify_transaction_web3(
-                            from_address, to_address, amount, symbol, deal_info, tx_receipt
-                        ):
-                            # Check confirmations
-                            confirmations = current_block - tx_receipt['blockNumber']
-                            
-                            if confirmations >= CONFIRMATION_BLOCKS:
-                                # Mark as processed
-                                self.processed_txs.add(tx_hash)
-                                
-                                # Add to detected payments
-                                detected_payments.append({
-                                    'deal_id': deal_id,
-                                    'tx_hash': tx_hash,
-                                    'from_address': from_address,
-                                    'amount': amount,
-                                    'token': symbol,
-                                    'confirmations': confirmations,
-                                    'timestamp': datetime.fromtimestamp(
-                                        self.w3.eth.get_block(tx_receipt['blockNumber'])['timestamp']
-                                    )
-                                })
-                                
-                                logger.info(f"Payment detected for deal {deal_id}: {tx_hash}")
-                
-                except Exception as e:
-                    logger.error(f"Error getting events: {e}")
-                    # Continue with next deal
-                    
+
+                transfer_filter = contract.events.Transfer.create_filter(
+                    fromBlock=from_block,
+                    toBlock=to_block,
+                    argument_filters={
+                        'to': Web3.to_checksum_address(ADMIN_WALLET_ADDRESS)
+                    }
+                )
+
+                events = transfer_filter.get_all_entries()
+
+                for event in events:
+                    tx_hash = event['transactionHash'].hex()
+
+                    if tx_hash in self.processed_txs:
+                        continue
+
+                    tx_receipt = self.w3.eth.get_transaction_receipt(tx_hash)
+
+                    from_address = event['args']['from']
+                    to_address = event['args']['to']
+                    value = event['args']['value']
+
+                    decimals = contract.functions.decimals().call()
+                    amount = value / (10 ** decimals)
+                    symbol = contract.functions.symbol().call()
+
+                    if not self._verify_transaction_web3(
+                        from_address, to_address, amount, symbol, deal_info, tx_receipt
+                    ):
+                        continue
+
+                    confirmations = current_block - tx_receipt['blockNumber']
+
+                    if confirmations >= CONFIRMATION_BLOCKS:
+                        self.processed_txs.add(tx_hash)
+
+                        payment_data = {
+                            'deal_id': deal_id,
+                            'tx_hash': tx_hash,
+                            'from_address': from_address,
+                            'amount': amount,
+                            'token': symbol,
+                            'confirmations': confirmations,
+                            'timestamp': datetime.fromtimestamp(
+                                self.w3.eth.get_block(tx_receipt['blockNumber'])['timestamp']
+                            )
+                        }
+
+                        detected_payments.append(payment_data)
+
+                        # 🔔 GROUP NOTIFICATION
+                        tx_link = self.get_transaction_link(tx_hash)
+                        message = f"""
+💰 <b>New Deposit Received</b>
+
+🆔 <b>Deal:</b> {deal_id}
+🪙 <b>Token:</b> {symbol}
+💵 <b>Amount:</b> {amount}
+👤 <b>From:</b> <code>{from_address}</code>
+
+🔗 <a href="{tx_link}">View on BscScan</a>
+"""
+                        await send_group_notification(message)
+
+                        logger.info(f"Deposit detected & notified: {tx_hash}")
+
             except Exception as e:
-                logger.error(f"Error checking transactions for deal {deal_id}: {e}")
-        
-        # Update last checked block
+                logger.error(f"Error checking deal {deal_id}: {e}")
+
         self.last_checked_block = to_block
-        
         return detected_payments
-    
+
     def _verify_transaction_web3(self, from_addr, to_addr, amount, symbol, deal_info, tx_receipt):
-        """Verify if transaction matches deal requirements"""
         try:
-            # Check if sent to admin wallet
             if to_addr.lower() != ADMIN_WALLET_ADDRESS.lower():
                 return False
-            
-            # Check if from seller's address
+
             if from_addr.lower() != deal_info['seller_address'].lower():
                 return False
-            
-            # Check amount (with small tolerance for rounding)
+
             expected_amount = float(deal_info['amount'])
-            
-            # Allow 0.1% tolerance
+
             if abs(amount - expected_amount) > (expected_amount * 0.001):
                 return False
-            
-            # Check token symbol
+
             if symbol.upper() != deal_info['crypto'].upper():
                 return False
-            
-            # Check transaction was successful
+
             if tx_receipt['status'] != 1:
                 return False
-            
+
             return True
-            
         except Exception as e:
-            logger.error(f"Error verifying transaction: {e}")
+            logger.error(f"Verify error: {e}")
             return False
-    
+
     def get_transaction_link(self, tx_hash):
-        """Generate BscScan transaction link"""
         return f"https://bscscan.com/tx/{tx_hash}"
 
-
-# Global monitor instance
+# Global instance
 monitor = BlockchainMonitorWeb3()
