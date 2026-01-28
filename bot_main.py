@@ -59,6 +59,7 @@ async def check_payments(context: ContextTypes.DEFAULT_TYPE):
 # =========================
 def setup_handlers(app: Application):
     app.add_handler(CommandHandler("start", start))
+    app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("status", status))
 
 # =========================
@@ -94,4 +95,5 @@ def main():
 # =========================
 if __name__ == "__main__":
     main()
+
 
