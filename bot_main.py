@@ -8,7 +8,7 @@ from telegram.ext import (
 )
 
 from config import (
-    TELEGRAM_BOT_TOKEN,
+    BOT_TOKEN,
     POLLING_INTERVAL
 )
 
@@ -94,3 +94,4 @@ def main():
 # =========================
 if __name__ == "__main__":
     main()
+
